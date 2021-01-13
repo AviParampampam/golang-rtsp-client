@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"../auth"
 )
@@ -168,6 +169,7 @@ func (session *Session) Connect() error {
 
 // Disconnect - disconnect from server
 func (session *Session) Disconnect() error {
+	time.Sleep(time.Second * 4)
 	res, err := session.Teardown()
 	if err != nil {
 		return err
@@ -363,7 +365,7 @@ func (session *Session) Setup() (Response, error) {
 	hs := map[string][]string{
 		"CSeq":       {session.nextCSeq()},
 		"Session":    {session.Session},
-		"Transport":  {"RTP/AVP;unicast;client_port=41760-41761"},
+		"Transport":  {"RTP/AVP;unicast;client_port=41770-41771"},
 		"User-Agent": {session.ClientUA},
 	}
 	req := request{SETUP, session.RTSP, "RTSP/1.0", hs, nil}
@@ -389,7 +391,7 @@ func (session *Session) Play() (Response, error) {
 	hs := map[string][]string{
 		"CSeq":       {session.nextCSeq()},
 		"Session":    {session.Session},
-		"Range":      {"npt=-15"},
+		"Range":      {"npt=0.000-"},
 		"User-Agent": {session.ClientUA},
 	}
 	req := request{PLAY, session.RTSP, "RTSP/1.0", hs, nil}
@@ -408,4 +410,40 @@ func (session *Session) Play() (Response, error) {
 		return session.getResponse()
 	}
 	return res, err
+}
+
+// SetupPlay - send SETUP and PLAY method
+func (session *Session) SetupPlay() (Response, error) {
+	res, err := session.Setup()
+	if err != nil {
+		return res, err
+	}
+
+	s, _ := res.Header["Session"]
+	session.Session = strings.Trim(s[0], " ")
+
+	return session.Play()
+
+	// hs := map[string][]string{
+	// 	"CSeq":       {session.nextCSeq()},
+	// 	"Session":    {session.Session},
+	// 	"Range":      {"npt=0.000-"},
+	// 	"User-Agent": {session.ClientUA},
+	// }
+	// req := request{PLAY, session.RTSP, "RTSP/1.0", hs, nil}
+
+	// err := session.sendRequest(req)
+	// if err != nil {
+	// 	return Response{}, err
+	// }
+
+	// res, err := session.getResponse()
+	// if err != nil {
+	// 	return res, err
+	// }
+	// if res.StatusCode == Unauthorized {
+	// 	session.authorization(req, res)
+	// 	return session.getResponse()
+	// }
+	// return res, err
 }
