@@ -169,7 +169,7 @@ func (session *Session) Connect() error {
 
 // Disconnect - disconnect from server
 func (session *Session) Disconnect() error {
-	time.Sleep(time.Second * 4)
+	time.Sleep(time.Second * 2)
 	res, err := session.Teardown()
 	if err != nil {
 		return err
