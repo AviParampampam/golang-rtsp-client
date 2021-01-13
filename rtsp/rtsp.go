@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"../auth"
 )
 
 // RTSP Methods
@@ -80,10 +84,14 @@ type Client struct {
 
 // Session - ..
 type Session struct {
-	Host    string
-	CSeq    int
-	conn    net.Conn
-	Session string
+	Host     string
+	CSeq     int
+	conn     net.Conn
+	Session  string
+	ClientUA string
+	Username string
+	Password string
+	RTSP     string
 }
 
 type request struct {
@@ -107,18 +115,22 @@ type Response struct {
 // NewClient - creating new rtsp client
 func NewClient() Client {
 	return Client{
-		"SV .1 Local Client",
+		"SV .2 Local Client",
 		make([]Session, 4),
 	}
 }
 
 // NewSession - creating new sessions
-func (client *Client) NewSession(host string, session string) (Session, error) {
+func (client *Client) NewSession(host, rtsp, session, username, password string) (Session, error) {
 	s := Session{
 		host,
 		0,
 		nil,
 		session,
+		client.UserAgent,
+		username,
+		password,
+		rtsp,
 	}
 	client.Sessions = append(client.Sessions, s)
 
@@ -129,10 +141,15 @@ func (client *Client) NewSession(host string, session string) (Session, error) {
 func (req request) string() string {
 	s := fmt.Sprintf("%s %s %s\r\n", req.method, req.url, req.version)
 
-	for k, v := range req.header {
-		for _, v := range v {
-			s += fmt.Sprintf("%s: %s\r\n", k, v)
+	for k, vs := range req.header {
+		header := k + ": "
+		for i, v := range vs {
+			header += v
+			if i != len(vs)-1 {
+				header += ", "
+			}
 		}
+		s += header + "\r\n"
 	}
 	s += "\r\n" + string(req.body)
 
@@ -151,10 +168,62 @@ func (session *Session) Connect() error {
 
 // Disconnect - disconnect from server
 func (session *Session) Disconnect() error {
+	res, err := session.Teardown()
+	if err != nil {
+		return err
+	}
+
+	if res.StatusCode == OK {
+		fmt.Println("Session ended successfully..")
+	} else {
+		fmt.Printf("Session ended not successfully (%d - %s)\n", res.StatusCode, res.Status)
+	}
+
 	return session.conn.Close()
 }
 
+func (session *Session) authorization(request request, response Response) {
+	WWWAuthenticate, _ := response.Header["WWW-Authenticate"]
+	// Обрезаем лишнее по краям
+	WWWAuthenticate = strings.Split(strings.Trim(strings.Join(WWWAuthenticate, ","), " "), ",")
+	authType := strings.Split(strings.Trim(WWWAuthenticate[0], " "), " ")[0]
+
+	if authType == "Digest" {
+		u, _ := url.Parse(request.url)
+		uri := u.RequestURI()
+		var realm, nonce string
+
+		// Find realm and nonce
+		for _, value := range WWWAuthenticate {
+			if match, _ := regexp.Match(`realm=".*"`, []byte(value)); match {
+				realm = value
+			}
+			if match, _ := regexp.Match(`nonce=".*"`, []byte(value)); match {
+				nonce = value
+			}
+		}
+		realm = strings.ReplaceAll(regexp.MustCompile(`".*"`).FindString(realm), `"`, "")
+		nonce = strings.ReplaceAll(regexp.MustCompile(`".*"`).FindString(nonce), `"`, "")
+
+		r := auth.Digest{}.Generating(session.Username, session.Password, realm, nonce, request.method, uri)
+
+		request.header["Authorization"] = []string{
+			`Digest username="` + session.Username + `"`,
+			`realm="` + realm + `"`,
+			`nonce="` + nonce + `"`,
+			`response="` + r + `"`,
+			`uri="` + uri + `"`,
+		}
+		session.sendRequest(request)
+
+	} else if authType == "Basic" {
+		// TODO: Реализовать авторизацию Basic
+	}
+}
+
 func (session *Session) sendRequest(req request) error {
+	fmt.Println("> > > > >")
+	fmt.Println(req.string())
 	_, err := io.WriteString(session.conn, req.string())
 	if err != nil {
 		return err
@@ -178,13 +247,13 @@ func (session *Session) getResponse() (Response, error) {
 	// Making response
 	res.Header = make(map[string][]string)
 
-	firstLineWords := strings.Split(lines[0], " ")
+	firstLineWords := strings.Split(strings.Trim(lines[0], " "), " ")
 	res.Version = firstLineWords[0]
 	res.StatusCode, err = strconv.Atoi(firstLineWords[1])
 	if err != nil {
 		return res, err
 	}
-	res.Status = firstLineWords[2]
+	res.Status = strings.Join(firstLineWords[2:], " ")
 
 	var indexSplitLine int
 	for i, l := range lines {
@@ -214,48 +283,129 @@ func (session *Session) nextCSeq() string {
 	return strconv.Itoa(session.CSeq)
 }
 
-// Describe - send DESCRIBE method
-func (session *Session) Describe(url string) (Response, error) {
+/*
+Describe - sending DESCRIBE method
+*/
+func (session *Session) Describe() (Response, error) {
+
 	hs := map[string][]string{
 		"CSeq":    {session.nextCSeq()},
 		"Session": {session.Session},
 	}
-	req := request{DESCRIBE, url, "RTSP/1.0", hs, nil}
+	req := request{DESCRIBE, session.RTSP, "RTSP/1.0", hs, nil}
 
 	err := session.sendRequest(req)
 	if err != nil {
 		return Response{}, err
 	}
-	return session.getResponse()
+
+	res, err := session.getResponse()
+	if err != nil {
+		return res, err
+	}
+	if res.StatusCode == Unauthorized {
+		session.authorization(req, res)
+		return session.getResponse()
+	}
+	return res, err
 }
 
 // Options - send OPTIONS method
-func (session *Session) Options(url string) (Response, error) {
+func (session *Session) Options() (Response, error) {
 	hs := map[string][]string{
 		"CSeq":    {session.nextCSeq()},
 		"Session": {session.Session},
 	}
-	req := request{OPTIONS, url, "RTSP/1.0", hs, nil}
+	req := request{OPTIONS, session.RTSP, "RTSP/1.0", hs, nil}
 
 	err := session.sendRequest(req)
 	if err != nil {
 		return Response{}, err
 	}
-	return session.getResponse()
+
+	res, err := session.getResponse()
+	if err != nil {
+		return res, err
+	}
+	if res.StatusCode == Unauthorized {
+		session.authorization(req, res)
+		return session.getResponse()
+	}
+	return res, err
+}
+
+// Teardown - send TEARDOWN method
+func (session *Session) Teardown() (Response, error) {
+	hs := map[string][]string{
+		"CSeq":    {session.nextCSeq()},
+		"Session": {session.Session},
+	}
+	req := request{TEARDOWN, session.RTSP, "RTSP/1.0", hs, nil}
+
+	err := session.sendRequest(req)
+	if err != nil {
+		return Response{}, err
+	}
+
+	res, err := session.getResponse()
+	if err != nil {
+		return res, err
+	}
+	if res.StatusCode == Unauthorized {
+		session.authorization(req, res)
+		return session.getResponse()
+	}
+	return res, err
 }
 
 // Setup - send SETUP method
-func (session *Session) Setup(url string) (Response, error) {
+func (session *Session) Setup() (Response, error) {
 	hs := map[string][]string{
-		"CSeq":      {session.nextCSeq()},
-		"Session":   {session.Session},
-		"Transport": {"RTP/AVP;unicast;client_port=8010-8011"},
+		"CSeq":       {session.nextCSeq()},
+		"Session":    {session.Session},
+		"Transport":  {"RTP/AVP;unicast;client_port=41760-41761"},
+		"User-Agent": {session.ClientUA},
 	}
-	req := request{SETUP, url, "RTSP/1.0", hs, nil}
+	req := request{SETUP, session.RTSP, "RTSP/1.0", hs, nil}
 
 	err := session.sendRequest(req)
 	if err != nil {
 		return Response{}, err
 	}
-	return session.getResponse()
+
+	res, err := session.getResponse()
+	if err != nil {
+		return res, err
+	}
+	if res.StatusCode == Unauthorized {
+		session.authorization(req, res)
+		return session.getResponse()
+	}
+	return res, err
+}
+
+// Play - send PLAY method
+func (session *Session) Play() (Response, error) {
+	hs := map[string][]string{
+		"CSeq":       {session.nextCSeq()},
+		"Session":    {session.Session},
+		"Range":      {"npt=-15"},
+		"User-Agent": {session.ClientUA},
+	}
+	req := request{PLAY, session.RTSP, "RTSP/1.0", hs, nil}
+
+	err := session.sendRequest(req)
+	if err != nil {
+		return Response{}, err
+	}
+
+	res, err := session.getResponse()
+	if err != nil {
+		return res, err
+	}
+	if res.StatusCode == Unauthorized {
+		session.authorization(req, res)
+		return session.getResponse()
+	}
+	return res, err
 }

@@ -1,23 +1,22 @@
-const net = require('net');
+const dgram = require('dgram')
 
-const server1 = net.createServer()
-const server2 = net.createServer()
+// Configure servers
+for (port of [41760, 41761]) {
+    const server = dgram.createSocket('udp4')
 
-server1.on('connection', () => console.log('server1 connection'))
-server2.on('connection', () => console.log('server2 connection'))
-
-server1.listen(8000, '127.0.0.1')
-server2.listen(8001, '127.0.0.1')
-
-// ---
-
-// const client = new net.Socket()
-// client.connect(8000, '192.168.1.15', () => console.log("client connected1"))
-// client.on('data', function(data) {
-// 	console.log('Received: ' + data);
-// 	client.destroy()
-// });
-
-// client.on('close', function() {
-// 	console.log('Connection closed')
-// });
+    server.on('error', err => {
+        console.log(`server error:\n${err.stack}`)
+        server.close()
+    })
+      
+    server.on('message', (msg, rinfo) => {
+        console.log(`server got: ${msg} from ${rinfo.address}:${rinfo.port}`)
+    })
+    
+    server.on('listening', () => {
+        const address = server.address()
+        console.log(`server listening ${address.address}:${address.port}`)
+    })
+    
+    server.bind(port)
+}
