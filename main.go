@@ -17,8 +17,8 @@ func main() {
 	client := rtsp.NewClient()
 
 	session, err := client.NewSession(
-		"192.168.1.15:554",
-		"rtsp://admin:12345678@192.168.1.15:554/ch01.264?dev=1",
+		"192.168.1.87:554",
+		"rtsp://admin:12345678@192.168.1.87:554//h264Preview_01_main",
 		"1352; timeout=60",
 		"admin",
 		"12345678",
@@ -63,6 +63,7 @@ func main() {
 		panic(err)
 	}
 	fmt.Println(res.String())
+	time.Sleep(time.Second * 10)
 }
 
 func listenUDPServers() {
